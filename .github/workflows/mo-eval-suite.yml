@@ -1,0 +1,45 @@
+name: mo-eval suite
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: Model routes to evaluate, space-separated (one arm each)
+        default: "anthropic/claude-opus-4-8"
+      harnesses:
+        description: Coding-agent harnesses, space-separated (mo, cc, pi, strands)
+        default: "cc strands"
+      history:
+        description: Merged pull requests offered as candidates
+        default: "300"
+      candidates:
+        description: Candidates the service is asked to source (tasks in the suite)
+        default: "12"
+      dry_run:
+        description: Mine + select only, print the funnel, run nothing
+        default: "false"
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write   # authenticates to mo-eval as this repository; no secret to manage
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: momentohq/mo-eval-action@3d9ab89ef27549552a81405dd4bdf6522d9f55c9 # v1.4.0
+        with:
+          # Hit the Lambda Function URL directly (the OIDC audience is a fixed mo-eval-svc, so auth is
+          # URL-independent). evals.gomomento.ai also resolves, but the Function URL avoids coupling to
+          # the custom domain's health.
+          service: https://zxui7nt7fztoox227b3piwf5jm0lumyg.lambda-url.us-west-2.on.aws
+          arms: ${{ inputs.arms }}
+          harnesses: ${{ inputs.harnesses }}
+          history: ${{ inputs.history }}
+          candidates: ${{ inputs.candidates }}
+          dry-run: ${{ inputs.dry_run }}
