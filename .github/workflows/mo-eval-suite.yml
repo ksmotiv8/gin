@@ -102,10 +102,12 @@ jobs:
           dry-run: ${{ inputs.dry_run }}
           out: ${{ runner.temp }}/mo-eval-suite
           reuse-suite: ${{ steps.suite.outputs.reuse }}
-          # This checkout is a fork and `.mo-eval/config.toml` declares `repo = "gin-gonic/gin"`, so
-          # the tasks are proved under the UPSTREAM tenant. Left to default, a reused suite would be
-          # submitted as `ksmotiv8/gin` — a tenant that never proved these tasks, and the service
-          # would refuse it. Declared by the workflow, not read back out of the cached tree.
+          # Which repository the conventions judge grades against. `.mo-eval/config.toml` declares
+          # `repo = "gin-gonic/gin"`, and the mining pass reads that upstream's merged pull requests
+          # and review comments; the reuse path takes the name from here instead, so leaving it to
+          # default would grade a reused suite against a fork with no merged history — a different
+          # score for a reason nothing in the output names. Declared by the workflow rather than read
+          # back out of the cached tree, so whoever wrote the cache cannot steer what the judge reads.
           repo-name: gin-gonic/gin
 
       # Only after a run that actually mined one, and never a dry run: `--dry-run` stops before
