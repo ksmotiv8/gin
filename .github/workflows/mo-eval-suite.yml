@@ -4,7 +4,7 @@ on:
     inputs:
       arms:
         description: Model routes to evaluate, space-separated (one arm each)
-        default: "anthropic/claude-opus-4-8"
+        default: "anthropic/claude-opus-4-8 momento/deepseek-ai/DeepSeek-V4-Pro"
       harnesses:
         description: Coding-agent harnesses, space-separated (mo, cc, pi, strands)
         default: "cc strands"
@@ -14,6 +14,12 @@ on:
       candidates:
         description: Candidates the service is asked to source (tasks in the suite)
         default: "12"
+      repeats:
+        description: Runs per arm, so a comparison rests on more than one sample (service cap 5)
+        default: "2"
+      refresh_suite:
+        description: Mine a fresh suite instead of reusing the cached one
+        default: "false"
       dry_run:
         description: Mine + select only, print the funnel, run nothing
         default: "false"
@@ -32,7 +38,57 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: momentohq/mo-eval-action@3d9ab89ef27549552a81405dd4bdf6522d9f55c9 # v1.4.0
+
+      # Mining reads the merged pull requests and validation runs `go test` once per candidate;
+      # changing the model or the harness changes neither. Restoring that tree turns a second
+      # comparison into the cheap half of the run.
+      #
+      # What makes two suites interchangeable is in the key: the mining inputs and the config they
+      # were mined under. Deliberately NOT the model, the harness or the commit — reusing across
+      # those is the whole point. `github.run_id` makes the primary key unique, so it never hits and
+      # the restore always falls through to `restore-keys`, taking the newest suite with that
+      # fingerprint. The save below writes under that same unique key, which is what lets
+      # `refresh_suite` replace a cached suite instead of losing to an entry that can never be
+      # overwritten. Restore and save must keep spelling the key the same way: a drift between them
+      # costs no error, just a suite that is mined every time.
+      - name: restore a previously mined suite
+        if: inputs.refresh_suite != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/mo-eval-suite
+          key: mo-eval-suite-h${{ inputs.history }}-c${{ inputs.candidates }}-${{ hashFiles('.mo-eval/config.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            mo-eval-suite-h${{ inputs.history }}-c${{ inputs.candidates }}-${{ hashFiles('.mo-eval/config.toml') }}-
+
+      - name: is there a suite to reuse?
+        id: suite
+        shell: bash
+        env:
+          SUITE_DIR: ${{ runner.temp }}/mo-eval-suite
+          ARMS: ${{ inputs.arms }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          # Decided from the tree, not from the cache step's hit/miss: an entry can be evicted or
+          # predate a suite layout, and `local-suite/` is the condition the Action itself reuses on.
+          # Falling back to mining is always safe; handing over a tree that is not a suite is a
+          # failed run.
+          reuse=""
+          if [ -d "$SUITE_DIR/local-suite" ]; then
+            reuse="$SUITE_DIR"
+          fi
+          # Two combinations the Action refuses outright. Offering a suite to them would trade a
+          # working mining run for a hard failure.
+          if [ "$DRY_RUN" = "true" ] || [ "$ARMS" = "none" ]; then
+            reuse=""
+          fi
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
+          if [ -n "$reuse" ]; then
+            echo "reusing the suite at $reuse — nothing is mined or validated this run" >&2
+          else
+            echo "mining a fresh suite into $SUITE_DIR" >&2
+          fi
+
+      - uses: momentohq/mo-eval-action@19bc82aea80ae694ecda5de6737286cc9b7e362d # v1.5.0
         with:
           # Hit the Lambda Function URL directly (the OIDC audience is a fixed mo-eval-svc, so auth is
           # URL-independent). evals.gomomento.ai also resolves, but the Function URL avoids coupling to
@@ -42,4 +98,22 @@ jobs:
           harnesses: ${{ inputs.harnesses }}
           history: ${{ inputs.history }}
           candidates: ${{ inputs.candidates }}
+          repeats: ${{ inputs.repeats }}
           dry-run: ${{ inputs.dry_run }}
+          out: ${{ runner.temp }}/mo-eval-suite
+          reuse-suite: ${{ steps.suite.outputs.reuse }}
+          # This checkout is a fork and `.mo-eval/config.toml` declares `repo = "gin-gonic/gin"`, so
+          # the tasks are proved under the UPSTREAM tenant. Left to default, a reused suite would be
+          # submitted as `ksmotiv8/gin` — a tenant that never proved these tasks, and the service
+          # would refuse it. Declared by the workflow, not read back out of the cached tree.
+          repo-name: gin-gonic/gin
+
+      # Only after a run that actually mined one, and never a dry run: `--dry-run` stops before
+      # validation, so its tree holds no runnable bundles. No status function in the `if`, so the
+      # implicit `success()` stands — a failed mine has nothing worth keeping.
+      - name: keep the suite for the next run
+        if: steps.suite.outputs.reuse == '' && inputs.dry_run != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/mo-eval-suite
+          key: mo-eval-suite-h${{ inputs.history }}-c${{ inputs.candidates }}-${{ hashFiles('.mo-eval/config.toml') }}-${{ github.run_id }}
